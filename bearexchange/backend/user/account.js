@@ -20,9 +20,7 @@ Used by: Registration page, Login page, Verification code form, Account settings
 
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
-
-// MySQL connection pool (db.js is in backend/db/db.js)
-const pool = require("../db/db");
+const pool = require("../db/db"); // MySQL connection pool
 
 /* -------------------------------------------------------
    EMAIL VALIDATION HELPERS
@@ -49,12 +47,9 @@ function validateEmailForRole(email, userRole = "student") {
 
 /* -------------------------------------------------------
    VERIFICATION CODE HELPERS
-   -------------------------------------------------------
-   Generates a 6-digit cryptographically secure code.
-   Computes a timestamp 15 minutes in the future.
 ------------------------------------------------------- */
 function generateVerificationCode() {
-  // Crypto gives a safer random number than Math.random()
+  // 6-digit cryptographically secure code
   const num = crypto.randomInt(100000, 1000000); // 100000–999999
   return String(num);
 }
@@ -67,37 +62,24 @@ function getVerificationExpiryDate() {
 
 /* =======================================================
    CREATE ACCOUNT
-   =======================================================
-   1. Validates UNC email based on role
-   2. Hashes password with bcrypt
-   3. Generates verification code & expiry
-   4. Inserts new record into `users` table
-   5. Returns (userId, verificationCode)
-
-   Expected users table fields:
-   - user_id (INT, PK)
-   - unc_email (VARCHAR, UNIQUE, NOT NULL)
-   - password_hash (VARCHAR, NOT NULL)
-   - display_name (VARCHAR, nullable)
-   - user_role (ENUM: 'student','faculty','admin')
-   - is_verified (BOOLEAN/TINYINT)
-   - verification_code (VARCHAR)
-   - verification_expiry (DATETIME)
-   - created_at (TIMESTAMP)
-   - last_login (DATETIME)
 ======================================================= */
-async function createAccount({ email, password, displayName, userRole = "student" }) {
-  // Validate email domain for given role
+async function createAccount({
+  email,
+  password,
+  displayName,
+  userRole = "student",
+}) {
+  // 1. Validate email domain for given role
   validateEmailForRole(email, userRole);
 
-  // Hash password securely
+  // 2. Hash password securely
   const hashed = await bcrypt.hash(password, 10);
 
-  // Generate verification details
+  // 3. Generate verification details
   const code = generateVerificationCode();
   const expiry = getVerificationExpiryDate();
 
-  // Insert into DB
+  // 4. Insert into DB
   const sql = `
     INSERT INTO users
       (unc_email, password_hash, display_name, user_role, is_verified, verification_code, verification_expiry)
@@ -114,7 +96,7 @@ async function createAccount({ email, password, displayName, userRole = "student
     expiry,
   ]);
 
-  // Return info to use in frontend or email system
+  // 5. Return info to use in frontend or email system
   return {
     userId: result.insertId,
     verificationCode: code,
@@ -123,12 +105,6 @@ async function createAccount({ email, password, displayName, userRole = "student
 
 /* =======================================================
    LOGIN
-   =======================================================
-   1. Fetch user by email
-   2. Compare input password with bcrypt hash
-   3. Reject if not verified
-   4. Update last_login timestamp
-   5. Return login success + user ID
 ======================================================= */
 async function login({ email, password }) {
   const sql = `
@@ -167,63 +143,76 @@ async function login({ email, password }) {
 }
 
 /* =======================================================
-   VERIFY ACCOUNT CODE
-   =======================================================
-   1. Fetch stored verification_code and expiry
-   2. Compare codeInput with stored code
-   3. Check if code is expired
-   4. If successful: mark user as verified & clear code fields
+   VERIFY CODE
 ======================================================= */
-async function verifyCode({ userId, codeInput }) {
-  // Fetch verification info
-  const sql = `
-    SELECT verification_code, verification_expiry
+/**
+ * Verify a user's account using a code.
+ * @param {Object} params
+ * @param {number|string} params.userId - user_id from the database
+ * @param {string} params.code - 6-digit verification code
+ */
+async function verifyCode({ userId, code }) {
+  console.log("verifyCode() called with:", { userId, code });
+
+  // Coerce to number and sanity-check
+  const numericId = Number(userId);
+  if (!numericId || Number.isNaN(numericId)) {
+    console.log("verifyCode: invalid userId:", userId);
+    return { success: false, reason: "Invalid user id" };
+  }
+
+  // Look up user by ID
+  const [rows] = await pool.query(
+    `
+    SELECT user_id, verification_code, verification_expiry
     FROM users
     WHERE user_id = ?
-  `;
-  const [rows] = await pool.query(sql, [userId]);
+    `,
+    [numericId]
+  );
 
-  if (rows.length === 0) {
+  console.log("verifyCode: DB lookup result:", rows);
+
+  if (!rows || rows.length === 0) {
     return { success: false, reason: "Account not found" };
   }
 
   const user = rows[0];
 
-  // No verification code stored
   if (!user.verification_code || !user.verification_expiry) {
-    return { success: false, reason: "No verification code set" };
+    return { success: false, reason: "No active verification code" };
   }
 
-  // Check expiry
-  const expiry = new Date(user.verification_expiry);
   const now = new Date();
+  const expiry = new Date(user.verification_expiry);
+
   if (now > expiry) {
-    return { success: false, reason: "Code expired" };
+    return { success: false, reason: "Verification code expired" };
   }
 
-  // Wrong code
-  if (String(user.verification_code) !== String(codeInput)) {
-    return { success: false, reason: "Invalid code" };
+  if (String(user.verification_code) !== String(code)) {
+    return { success: false, reason: "Invalid verification code" };
   }
 
-  // Mark user as verified and clear code/expiry
-  const updateSql = `
+  // Mark the account as verified
+  await pool.query(
+    `
     UPDATE users
     SET is_verified = 1,
         verification_code = NULL,
         verification_expiry = NULL
     WHERE user_id = ?
-  `;
-  await pool.query(updateSql, [userId]);
+    `,
+    [numericId]
+  );
 
-  return { success: true, message: "Verified successfully" };
+  console.log("verifyCode: verification successful for user_id:", numericId);
+
+  return { success: true, message: "Account verified successfully" };
 }
 
 /* =======================================================
    DELETE ACCOUNT
-   =======================================================
-   WARNING: PERMANENT. No recovery.
-   Cascades delete to listings, messages, etc. if FK defined.
 ======================================================= */
 async function deleteAccount({ userId }) {
   const sql = "DELETE FROM users WHERE user_id = ?";

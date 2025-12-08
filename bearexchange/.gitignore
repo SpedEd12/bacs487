@@ -1,4 +1,11 @@
-# will ignore any modules created by node here
-node_modules/
+# Node
 backend/node_modules/
 frontend/node_modules/
+
+# Logs
+*.log
+
+# Env files
+*.env
+backend/.env
+frontend/.env
